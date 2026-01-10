@@ -13,7 +13,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(__file__))
 
 import config
-from src.data_loader import load_and_clean_data, load_marketing_costs
+from src.data_loader import load_and_clean_data, load_marketing_costs, load_live_sessions
 from src.cohort_analyzer import build_cohort_index, get_cohort_summary
 from src.metrics_calculator import (
     calculate_retention_rates,
@@ -22,8 +22,11 @@ from src.metrics_calculator import (
     calculate_aov_first_vs_repeat,
     calculate_ltv_by_cohort,
     calculate_customer_ltv,
-    generate_cohort_summary
+    generate_cohort_summary,
+    compare_live_vs_regular,
+    calculate_live_cohort_retention
 )
+from src.session_analyzer import match_orders_to_sessions, get_session_summary, get_host_performance
 from src.visualizer import generate_all_visualizations
 
 # Configure logging
@@ -44,10 +47,15 @@ class CohortAnalysisTool:
     def __init__(self):
         self.df = None
         self.marketing_costs_df = None
+        self.sessions_df = None
         self.retention_rates = None
         self.cohort_ltv = None
         self.cohort_summary = None
         self.customer_ltv = None
+        self.live_comparison = None
+        self.session_summary = None
+        self.host_performance = None
+        self.live_retention = None
 
     def load_data(self, force_reload: bool = False):
         """Load and clean order data."""
@@ -86,6 +94,88 @@ class CohortAnalysisTool:
         except Exception as e:
             logger.error(f"✗ Error loading marketing costs: {e}")
             self.marketing_costs_df = None
+
+    def load_sessions(self):
+        """Load Live Shopping sessions data."""
+        if not config.ENABLE_LIVE_ANALYSIS:
+            logger.info("Live Shopping analysis is disabled in config")
+            return False
+
+        sessions_path = os.path.join(config.DATA_DIR, config.LIVE_SESSIONS_FILENAME)
+
+        try:
+            if os.path.exists(sessions_path):
+                self.sessions_df = load_live_sessions(sessions_path)
+                logger.info(f"✓ Successfully loaded {len(self.sessions_df):,} live shopping sessions")
+                return True
+            else:
+                logger.warning(f"⚠ Live shopping sessions file not found at {sessions_path}")
+                logger.warning("⚠ Live shopping analysis will be skipped")
+                self.sessions_df = None
+                return False
+        except Exception as e:
+            logger.error(f"✗ Error loading live shopping sessions: {e}")
+            self.sessions_df = None
+            return False
+
+    def analyze_live_sessions(self):
+        """Analyze Live Shopping session performance."""
+        if self.df is None:
+            logger.error("✗ No data loaded. Please load data first.")
+            return False
+
+        if self.sessions_df is None or len(self.sessions_df) == 0:
+            logger.warning("⚠ No sessions loaded. Skipping live shopping analysis.")
+            return False
+
+        logger.info("="*80)
+        logger.info("ANALYZING LIVE SHOPPING SESSIONS")
+        logger.info("="*80)
+
+        try:
+            # Match orders to sessions
+            logger.info("Matching orders to live shopping sessions...")
+            self.df = match_orders_to_sessions(
+                self.df,
+                self.sessions_df,
+                buffer_minutes=config.LIVE_SESSION_BUFFER_MINUTES
+            )
+
+            # Calculate live vs regular comparison
+            logger.info("Comparing live vs regular performance...")
+            self.live_comparison = compare_live_vs_regular(
+                self.df,
+                config.CUSTOMER_ID_FIELD,
+                config.LTV_WINDOWS
+            )
+
+            # Calculate session-level metrics
+            logger.info("Calculating session performance...")
+            self.session_summary = get_session_summary(
+                self.df,
+                self.sessions_df,
+                config.CUSTOMER_ID_FIELD
+            )
+
+            # Calculate host performance if host data available
+            if 'Host' in self.sessions_df.columns:
+                logger.info("Calculating host performance...")
+                self.host_performance = get_host_performance(self.session_summary)
+
+            # Calculate retention for live-acquired customers
+            logger.info("Calculating retention for live-acquired customers...")
+            self.live_retention = calculate_live_cohort_retention(
+                self.df,
+                config.CUSTOMER_ID_FIELD
+            )
+
+            logger.info("✓ Live shopping analysis completed successfully")
+            return True
+        except Exception as e:
+            logger.error(f"✗ Error analyzing live shopping sessions: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     def assign_cohorts(self):
         """Assign customers to cohorts."""
@@ -181,6 +271,39 @@ class CohortAnalysisTool:
             self.cohort_summary.to_csv(summary_file, index=False, encoding=config.CSV_ENCODING)
             logger.info(f"✓ Exported cohort summary to {summary_file}")
 
+            # Export live shopping reports if available
+            if self.live_comparison is not None:
+                logger.info("Exporting live shopping analysis reports...")
+
+                # Export comparison summary
+                comparison_file = os.path.join(config.CSV_OUTPUT_DIR, 'live_vs_regular_comparison.csv')
+                comparison_data = []
+                for source, metrics in self.live_comparison.items():
+                    if source != 'Difference':
+                        row = {'Order Source': source}
+                        row.update(metrics)
+                        comparison_data.append(row)
+                pd.DataFrame(comparison_data).to_csv(comparison_file, index=False, encoding=config.CSV_ENCODING)
+                logger.info(f"✓ Exported live vs regular comparison to {comparison_file}")
+
+                # Export session performance
+                if self.session_summary is not None and len(self.session_summary) > 0:
+                    session_file = os.path.join(config.CSV_OUTPUT_DIR, 'session_performance.csv')
+                    self.session_summary.to_csv(session_file, index=False, encoding=config.CSV_ENCODING)
+                    logger.info(f"✓ Exported session performance to {session_file}")
+
+                # Export host performance
+                if self.host_performance is not None and len(self.host_performance) > 0:
+                    host_file = os.path.join(config.CSV_OUTPUT_DIR, 'host_performance.csv')
+                    self.host_performance.to_csv(host_file, index=False, encoding=config.CSV_ENCODING)
+                    logger.info(f"✓ Exported host performance to {host_file}")
+
+                # Export live cohort retention
+                if self.live_retention is not None and len(self.live_retention) > 0:
+                    live_retention_file = os.path.join(config.CSV_OUTPUT_DIR, 'live_cohort_retention.csv')
+                    self.live_retention.to_csv(live_retention_file, encoding=config.CSV_ENCODING)
+                    logger.info(f"✓ Exported live cohort retention to {live_retention_file}")
+
             logger.info("✓ All CSV reports exported successfully")
             return True
         except Exception as e:
@@ -233,6 +356,11 @@ class CohortAnalysisTool:
         # Calculate metrics
         if not self.calculate_metrics():
             return False
+
+        # Load and analyze live shopping sessions if available
+        if config.ENABLE_LIVE_ANALYSIS:
+            if self.load_sessions():
+                self.analyze_live_sessions()
 
         # Export CSV reports
         if not self.export_csv_reports():
@@ -296,6 +424,30 @@ class CohortAnalysisTool:
                 avg_ltv_cac_ratio = self.cohort_summary['LTV_12Mo_CAC_Ratio'].mean()
                 print(f"Average LTV:CAC Ratio (12Mo): {avg_ltv_cac_ratio:.2f}x")
 
+        # Add Live Shopping statistics if available
+        if self.live_comparison is not None and len(self.live_comparison) > 0:
+            print("\nLIVE SHOPPING PERFORMANCE")
+            print("-"*80)
+
+            if 'Live Shopping' in self.live_comparison:
+                live = self.live_comparison['Live Shopping']
+                print(f"Live Shopping Orders: {live.get('Total Orders', 0):,}")
+                print(f"Live Shopping AOV: MXN {live.get('AOV', 0):,.2f}")
+                if 'LTV_12Mo' in live:
+                    print(f"Live Shopping LTV (12Mo): MXN {live.get('LTV_12Mo', 0):,.2f}")
+
+            if 'Regular' in self.live_comparison:
+                regular = self.live_comparison['Regular']
+                print(f"\nRegular Orders: {regular.get('Total Orders', 0):,}")
+                print(f"Regular AOV: MXN {regular.get('AOV', 0):,.2f}")
+                if 'LTV_12Mo' in regular:
+                    print(f"Regular LTV (12Mo): MXN {regular.get('LTV_12Mo', 0):,.2f}")
+
+            if self.session_summary is not None and len(self.session_summary) > 0:
+                print(f"\nTotal Live Sessions: {len(self.session_summary)}")
+                print(f"Avg Orders per Session: {self.session_summary['Total Orders'].mean():.1f}")
+                print(f"Avg Revenue per Session: MXN {self.session_summary['Total Revenue'].mean():,.2f}")
+
         print("="*80 + "\n")
 
         return True
@@ -309,10 +461,11 @@ def display_menu():
     print("1. Run Full Analysis (recommended)")
     print("2. Load & Clean Data Only")
     print("3. Calculate Metrics")
-    print("4. Export CSV Reports")
-    print("5. Generate Visualizations")
-    print("6. Display Summary Statistics")
-    print("7. Exit")
+    print("4. Analyze Live Shopping Sessions")
+    print("5. Export CSV Reports")
+    print("6. Generate Visualizations")
+    print("7. Display Summary Statistics")
+    print("8. Exit")
     print("="*80)
 
 
@@ -324,7 +477,7 @@ def main():
         display_menu()
 
         try:
-            choice = input("\nSelect an option (1-7): ").strip()
+            choice = input("\nSelect an option (1-8): ").strip()
 
             if choice == '1':
                 tool.run_full_analysis()
@@ -337,28 +490,34 @@ def main():
                     tool.assign_cohorts()
                 tool.calculate_metrics()
             elif choice == '4':
-                if tool.cohort_summary is None:
-                    print("\n⚠ Running full analysis first...")
-                    tool.run_full_analysis()
-                else:
-                    tool.export_csv_reports()
+                if tool.df is None:
+                    tool.load_data()
+                    tool.assign_cohorts()
+                if tool.load_sessions():
+                    tool.analyze_live_sessions()
             elif choice == '5':
                 if tool.cohort_summary is None:
                     print("\n⚠ Running full analysis first...")
                     tool.run_full_analysis()
                 else:
-                    tool.generate_visualizations()
+                    tool.export_csv_reports()
             elif choice == '6':
                 if tool.cohort_summary is None:
                     print("\n⚠ Running full analysis first...")
                     tool.run_full_analysis()
                 else:
-                    tool.display_summary()
+                    tool.generate_visualizations()
             elif choice == '7':
+                if tool.cohort_summary is None:
+                    print("\n⚠ Running full analysis first...")
+                    tool.run_full_analysis()
+                else:
+                    tool.display_summary()
+            elif choice == '8':
                 print("\n👋 Exiting. Thank you for using the Cohort Analysis Tool!")
                 break
             else:
-                print("\n✗ Invalid choice. Please select 1-7.")
+                print("\n✗ Invalid choice. Please select 1-8.")
 
         except KeyboardInterrupt:
             print("\n\n👋 Interrupted by user. Exiting...")

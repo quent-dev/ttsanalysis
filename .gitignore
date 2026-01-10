@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Data files
+data/raw/*.csv
+data/processed/*.parquet
+
+# Keep example session data for reference
+!data/raw/Live Shopping Sessions Example.csv
+
+# Output files
+output/csv/*.csv
+output/visualizations/*.png
+output/visualizations/*.html
+
+# Logs
+*.log
+cohort_analysis.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Claude Code
+.claude/settings.local.json

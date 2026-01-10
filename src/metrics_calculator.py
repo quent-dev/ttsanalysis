@@ -384,3 +384,140 @@ def generate_cohort_summary(df: pd.DataFrame, customer_id_field: str = 'Buyer Us
     logger.info(f"Generated comprehensive summary for {len(cohort_summary)} cohorts")
 
     return cohort_summary
+
+
+def compare_live_vs_regular(df: pd.DataFrame, customer_id_field: str = 'Buyer Username',
+                            ltv_windows: List[int] = [3, 6, 12]) -> Dict:
+    """
+    Compare performance metrics between Live Shopping and Regular orders.
+
+    Args:
+        df: DataFrame with order data (must have 'Order Source' column from session matching)
+        customer_id_field: Column name for customer identification
+        ltv_windows: List of months for LTV calculation
+
+    Returns:
+        Dictionary with comparison metrics for each order source
+    """
+    logger.info("Comparing Live Shopping vs Regular order performance")
+
+    if 'Order Source' not in df.columns:
+        logger.error("'Order Source' column not found. Orders must be matched to sessions first.")
+        return {}
+
+    comparison = {}
+
+    for source in ['Live Shopping', 'Regular']:
+        source_df = df[df['Order Source'] == source]
+
+        if len(source_df) == 0:
+            logger.warning(f"No orders found for {source}")
+            continue
+
+        # Basic metrics
+        metrics = {
+            'Total Orders': len(source_df),
+            'Total Revenue': source_df['Order Amount'].sum(),
+            'Unique Customers': source_df[customer_id_field].nunique(),
+            'AOV': source_df['Order Amount'].mean(),
+        }
+
+        # Orders per customer
+        orders_per_customer = len(source_df) / metrics['Unique Customers']
+        metrics['Orders per Customer'] = orders_per_customer
+
+        # Repeat purchase rate (customers who made more than one order)
+        repeat_customers = source_df.groupby(customer_id_field)['Order ID'].count()
+        metrics['Repeat Customers'] = (repeat_customers > 1).sum()
+        metrics['Repeat Rate %'] = (metrics['Repeat Customers'] / metrics['Unique Customers']) * 100
+
+        # First vs Repeat order AOV
+        if 'Is First Order' in source_df.columns:
+            metrics['First Order AOV'] = source_df[source_df['Is First Order']]['Order Amount'].mean()
+            metrics['Repeat Order AOV'] = source_df[~source_df['Is First Order']]['Order Amount'].mean()
+
+        # Calculate LTV for customers from this source
+        # Only for customers acquired through this source (first order was from this source)
+        if 'Is First Order' in source_df.columns and 'Cohort Age' in source_df.columns:
+            source_acquired_customers = source_df[source_df['Is First Order']][customer_id_field].unique()
+            source_acquired_df = df[df[customer_id_field].isin(source_acquired_customers)]
+
+            # Calculate LTV using all orders from these customers (not just source orders)
+            customer_ltv = calculate_customer_ltv(source_acquired_df, customer_id_field, ltv_windows)
+
+            for months in ltv_windows:
+                ltv_col = f'LTV_{months}Mo'
+                metrics[ltv_col] = customer_ltv[ltv_col].mean()
+
+            metrics['LTV_AllTime'] = customer_ltv['LTV_AllTime'].mean()
+            metrics['Customers Acquired'] = len(source_acquired_customers)
+
+        # Round numeric values
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                metrics[key] = round(value, 2)
+
+        comparison[source] = metrics
+
+    # Calculate differences and ratios
+    if 'Live Shopping' in comparison and 'Regular' in comparison:
+        comparison['Difference'] = {}
+        for metric in comparison['Live Shopping'].keys():
+            if metric in comparison['Regular']:
+                live_val = comparison['Live Shopping'][metric]
+                regular_val = comparison['Regular'][metric]
+
+                if isinstance(live_val, (int, float)) and regular_val != 0:
+                    diff = live_val - regular_val
+                    pct_diff = ((live_val / regular_val) - 1) * 100
+
+                    comparison['Difference'][metric] = {
+                        'Absolute': round(diff, 2),
+                        'Percentage': round(pct_diff, 2)
+                    }
+
+    logger.info("Comparison complete")
+    if 'Live Shopping' in comparison:
+        logger.info(f"Live Shopping AOV: MXN {comparison['Live Shopping']['AOV']:,.2f}")
+    if 'Regular' in comparison:
+        logger.info(f"Regular AOV: MXN {comparison['Regular']['AOV']:,.2f}")
+
+    return comparison
+
+
+def calculate_live_cohort_retention(df: pd.DataFrame, customer_id_field: str = 'Buyer Username') -> pd.DataFrame:
+    """
+    Calculate retention rates for customers acquired through Live Shopping sessions.
+
+    Args:
+        df: DataFrame with order data (must have 'Order Source' and cohort columns)
+        customer_id_field: Column name for customer identification
+
+    Returns:
+        DataFrame with retention rates for live-acquired customers
+    """
+    logger.info("Calculating retention for Live Shopping acquired customers")
+
+    if 'Order Source' not in df.columns or 'Is First Order' not in df.columns:
+        logger.error("Required columns not found. Orders must be matched and cohorts assigned first.")
+        return pd.DataFrame()
+
+    # Find customers acquired through live shopping
+    live_acquired = df[
+        (df['Is First Order']) &
+        (df['Order Source'] == 'Live Shopping')
+    ][customer_id_field].unique()
+
+    if len(live_acquired) == 0:
+        logger.warning("No customers acquired through Live Shopping sessions")
+        return pd.DataFrame()
+
+    # Filter to only these customers (but include all their orders)
+    live_cohort_df = df[df[customer_id_field].isin(live_acquired)]
+
+    logger.info(f"Analyzing retention for {len(live_acquired):,} live-acquired customers")
+
+    # Calculate retention using standard function
+    retention_rates = calculate_retention_rates(live_cohort_df, customer_id_field)
+
+    return retention_rates

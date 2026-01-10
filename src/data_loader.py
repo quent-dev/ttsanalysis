@@ -199,6 +199,71 @@ def load_marketing_costs(csv_path: str) -> pd.DataFrame:
     return df_clean
 
 
+def load_live_sessions(csv_path: str) -> pd.DataFrame:
+    """
+    Load Live Shopping session data from CSV file.
+
+    Args:
+        csv_path: Path to the Live Shopping Sessions CSV file
+
+    Returns:
+        DataFrame with session data including Session ID, Start Time, End Time, and metadata
+    """
+    logger.info(f"Loading live shopping sessions from {csv_path}")
+
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"Live shopping sessions file not found: {csv_path}")
+
+    # Read CSV with UTF-8 BOM encoding
+    df = pd.read_csv(csv_path, encoding='utf-8-sig')
+
+    # Required columns
+    required_cols = ['Session ID', 'Start Time', 'End Time']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Live Shopping Sessions CSV must have columns: {required_cols}. Missing: {missing_cols}")
+
+    # Parse datetime fields
+    for col in ['Start Time', 'End Time']:
+        df[col] = df[col].astype(str).str.strip()
+        df[col] = pd.to_datetime(df[col], format='%m/%d/%Y %I:%M:%S %p', errors='coerce')
+
+        null_count = df[col].isna().sum()
+        if null_count > 0:
+            logger.warning(f"{col}: {null_count} invalid/missing dates")
+
+    # Remove rows with missing critical data
+    initial_count = len(df)
+    df = df.dropna(subset=['Session ID', 'Start Time', 'End Time'])
+    dropped = initial_count - len(df)
+    if dropped > 0:
+        logger.warning(f"Dropped {dropped} sessions with missing critical data")
+
+    # Validate End Time > Start Time
+    invalid_times = (df['End Time'] <= df['Start Time']).sum()
+    if invalid_times > 0:
+        logger.error(f"Found {invalid_times} sessions where End Time <= Start Time")
+        df = df[df['End Time'] > df['Start Time']]
+        logger.warning(f"Removed {invalid_times} invalid sessions")
+
+    # Calculate Duration Minutes if not provided
+    if 'Duration Minutes' not in df.columns or df['Duration Minutes'].isna().all():
+        df['Duration Minutes'] = (df['End Time'] - df['Start Time']).dt.total_seconds() / 60
+        df['Duration Minutes'] = df['Duration Minutes'].round(0).astype(int)
+        logger.info("Calculated Duration Minutes from Start/End times")
+
+    # Parse numeric fields if present
+    numeric_fields = ['Peak Viewers', 'Total Viewers']
+    for col in numeric_fields:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    logger.info(f"Loaded {len(df)} live shopping sessions")
+    logger.info(f"Date range: {df['Start Time'].min()} to {df['End Time'].max()}")
+
+    return df
+
+
 def load_and_clean_data(csv_path: str, force_reload: bool = False) -> pd.DataFrame:
     """
     Load and clean TikTok Shop order data with caching.

@@ -16,6 +16,7 @@ VIZ_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "visualizations")
 # Data Files
 CSV_FILENAME = "Todo pedido-2026-01-09-16_57.csv"
 MARKETING_COSTS_FILENAME = "Marketing TTS.csv"
+LIVE_SESSIONS_FILENAME = "Live Shopping Sessions.csv"
 CLEANED_DATA_FILE = os.path.join(PROCESSED_DIR, "orders_cleaned.parquet")
 
 # Analysis Parameters
@@ -49,3 +50,7 @@ LOG_LEVEL = "INFO"
 CSV_ENCODING = "utf-8-sig"  # UTF-8 with BOM for Excel compatibility
 CSV_DECIMAL = "."
 CSV_THOUSANDS = ","
+
+# Live Shopping Analysis
+ENABLE_LIVE_ANALYSIS = True  # Toggle live shopping analysis on/off
+LIVE_SESSION_BUFFER_MINUTES = 30  # Buffer time after session ends to catch delayed orders
