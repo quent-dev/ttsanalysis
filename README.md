@@ -263,17 +263,17 @@ Edit `cohort_analyzer.py` to:
 
 Based on the most recent analysis:
 
-- **Total Customers:** 36,070
-- **Total Revenue:** MXN 14,753,364.62
-- **Overall AOV:** MXN 298.22
-- **Average Repeat Rate:** 18.09%
-- **First Order AOV:** MXN 283.99
-- **Repeat Order AOV:** MXN 336.63 (+18.5% higher)
+- **Total Customers:** XXXXX
+- **Total Revenue:** MXN XXXX
+- **Overall AOV:** MXN 
+- **Average Repeat Rate:** 
+- **First Order AOV:** MXN 
+- **Repeat Order AOV:** MXN 
 
 **Top Performing Cohorts:**
-- Nov 2025: 7,366 new customers (largest cohort)
-- Dec 2025: MXN 361.87 AOV (highest average order value)
-- Feb 2025: 31.72% repeat rate (highest retention)
+- Nov 2025: XXXX new customers (largest cohort)
+- Dec 2025: MXN YYYY AOV (highest average order value)
+- Feb 2025: ZZ% repeat rate (highest retention)
 
 ## License
 
