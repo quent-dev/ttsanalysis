@@ -12,11 +12,13 @@ This project is a comprehensive Python-based cohort analysis tool for TikTok Sho
 # Activate virtual environment
 source /home/quent/sarelly-venv/bin/activate
 
-# Run full cohort analysis (non-interactive)
-python test_analysis.py
-
-# Run interactive menu-driven interface
+# Run interactive menu-driven interface (recommended)
 python main.py
+# Select account (MX or US) when prompted
+
+# Run quick test for specific account
+python test_analysis.py MX
+python test_analysis.py US
 
 # Install/update dependencies
 pip install -r requirements.txt
@@ -33,11 +35,19 @@ cohorts-tts/
 │   ├── metrics_calculator.py # Retention, AOV, LTV calculations
 │   └── visualizer.py       # Chart generation (matplotlib/seaborn)
 ├── data/
-│   ├── raw/                # TikTok Shop CSV exports
-│   └── processed/          # Cached parquet files (10x faster loading)
+│   ├── MX/                 # Mexico account data
+│   │   ├── raw/            # TikTok Shop CSV exports
+│   │   └── processed/      # Cached parquet files
+│   └── US/                 # United States account data
+│       ├── raw/            # TikTok Shop CSV exports
+│       └── processed/      # Cached parquet files
 ├── output/
-│   ├── csv/                # Analysis reports
-│   └── visualizations/     # PNG charts (300 DPI)
+│   ├── MX/                 # Mexico account outputs
+│   │   ├── csv/            # Analysis reports
+│   │   └── visualizations/ # PNG charts (300 DPI)
+│   └── US/                 # US account outputs
+│       ├── csv/            # Analysis reports
+│       └── visualizations/ # PNG charts (300 DPI)
 ├── main.py                 # Menu-driven execution script
 ├── test_analysis.py        # Quick test runner
 └── config.py               # Centralized configuration
@@ -54,6 +64,39 @@ cohorts-tts/
 2. **Average Order Value (AOV)**: First orders vs repeat orders
 3. **Lifetime Value (LTV)**: 3-month, 6-month, 12-month, all-time
 4. **Repeat Purchase Rate**: By cohort and overall
+
+## Multi-Account Setup
+
+The tool supports analyzing separate TikTok Shop accounts (MX and US).
+
+### File Organization
+Place CSV exports in account-specific directories:
+- Mexico account: `data/MX/raw/`
+- US account: `data/US/raw/`
+
+### File Naming
+Files can be named anything, but must contain these patterns:
+- **Orders**: Filename contains "Todo pedido" or "All order"
+- **Marketing Costs** (optional): Filename contains "Marketing"
+- **Live Sessions** (optional): Filename contains "Live Shopping"
+
+### Running Analysis
+```bash
+# Interactive menu (recommended)
+python main.py
+# Select account (MX or US) when prompted
+
+# Quick test for specific account
+python test_analysis.py MX
+python test_analysis.py US
+```
+
+### Outputs
+Each account has isolated outputs:
+- CSV reports: `output/MX/csv/` and `output/US/csv/`
+- Visualizations: `output/MX/visualizations/` and `output/US/visualizations/`
+- Logs: `cohort_analysis_mx.log` and `cohort_analysis_us.log`
+- Cache files: `data/MX/processed/` and `data/US/processed/`
 
 ## Data Format
 

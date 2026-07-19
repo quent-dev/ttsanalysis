@@ -387,7 +387,8 @@ def generate_cohort_summary(df: pd.DataFrame, customer_id_field: str = 'Buyer Us
 
 
 def compare_live_vs_regular(df: pd.DataFrame, customer_id_field: str = 'Buyer Username',
-                            ltv_windows: List[int] = [3, 6, 12]) -> Dict:
+                            ltv_windows: List[int] = [3, 6, 12],
+                            comparison_date_range: tuple = None) -> Dict:
     """
     Compare performance metrics between Live Shopping and Regular orders.
 
@@ -395,6 +396,8 @@ def compare_live_vs_regular(df: pd.DataFrame, customer_id_field: str = 'Buyer Us
         df: DataFrame with order data (must have 'Order Source' column from session matching)
         customer_id_field: Column name for customer identification
         ltv_windows: List of months for LTV calculation
+        comparison_date_range: Optional (start_date, end_date) tuple to filter comparison period.
+                              If None, uses full date range of all orders.
 
     Returns:
         Dictionary with comparison metrics for each order source
@@ -404,6 +407,14 @@ def compare_live_vs_regular(df: pd.DataFrame, customer_id_field: str = 'Buyer Us
     if 'Order Source' not in df.columns:
         logger.error("'Order Source' column not found. Orders must be matched to sessions first.")
         return {}
+
+    # Apply date filter if specified for fair comparison
+    if comparison_date_range:
+        start_date = pd.to_datetime(comparison_date_range[0])
+        end_date = pd.to_datetime(comparison_date_range[1])
+        original_count = len(df)
+        df = df[(df['Created Time'] >= start_date) & (df['Created Time'] <= end_date)].copy()
+        logger.info(f"Filtering comparison to {start_date.date()} - {end_date.date()}: {len(df)} orders (from {original_count})")
 
     comparison = {}
 

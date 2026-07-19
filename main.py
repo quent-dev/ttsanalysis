@@ -29,22 +29,27 @@ from src.metrics_calculator import (
 from src.session_analyzer import match_orders_to_sessions, get_session_summary, get_host_performance
 from src.visualizer import generate_all_visualizations
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(config.LOG_FILE),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
 logger = logging.getLogger(__name__)
 
 
 class CohortAnalysisTool:
     """Main class for TikTok Shop cohort analysis."""
 
-    def __init__(self):
+    def __init__(self, account_id: str):
+        """Initialize the cohort analysis tool for a specific account.
+
+        Args:
+            account_id: Account identifier ('MX', 'US', etc.)
+        """
+        self.account_id = account_id
+        self.account_name = config.ACCOUNTS[account_id]['name']
+
+        # Set up account-specific paths
+        self.data_dir = config.ACCOUNTS[account_id]['data_dir']
+        self.csv_output_dir = config.ACCOUNTS[account_id]['csv_output_dir']
+        self.viz_output_dir = config.ACCOUNTS[account_id]['viz_output_dir']
+
+        # Data containers
         self.df = None
         self.marketing_costs_df = None
         self.sessions_df = None
@@ -60,62 +65,68 @@ class CohortAnalysisTool:
     def load_data(self, force_reload: bool = False):
         """Load and clean order data."""
         logger.info("="*80)
-        logger.info("LOADING AND CLEANING DATA")
+        logger.info(f"LOADING AND CLEANING DATA - Account: {self.account_name}")
         logger.info("="*80)
 
-        csv_path = os.path.join(config.DATA_DIR, config.CSV_FILENAME)
+        # Use dynamic file discovery
+        try:
+            csv_path = config.find_orders_csv(self.account_id)
+            logger.info(f"Using CSV: {os.path.basename(csv_path)}")
+        except FileNotFoundError as e:
+            logger.error(str(e))
+            return False
 
         try:
-            self.df = load_and_clean_data(csv_path, force_reload=force_reload)
-            logger.info(f"✓ Successfully loaded {len(self.df):,} orders")
-            logger.info(f"✓ Date range: {self.df['Created Time'].min()} to {self.df['Created Time'].max()}")
-            logger.info(f"✓ Unique customers: {self.df[config.CUSTOMER_ID_FIELD].nunique():,}")
+            self.df = load_and_clean_data(csv_path, account_id=self.account_id, force_reload=force_reload)
+
+            # Log summary
+            logger.info(f"\nData loaded successfully:")
+            logger.info(f"  Total orders: {len(self.df):,}")
+            logger.info(f"  Date range: {self.df['Paid Time'].min()} to {self.df['Paid Time'].max()}")
+            logger.info(f"  Unique customers: {self.df[config.CUSTOMER_ID_FIELD].nunique():,}")
 
             # Load marketing costs if available
             self.load_marketing_costs()
 
             return True
         except Exception as e:
-            logger.error(f"✗ Error loading data: {e}")
+            logger.error(f"Error loading data: {e}")
             return False
 
     def load_marketing_costs(self):
-        """Load marketing costs data for CAC calculation."""
-        marketing_costs_path = os.path.join(config.DATA_DIR, config.MARKETING_COSTS_FILENAME)
+        """Load marketing costs data (optional)."""
+        logger.info("\nLoading marketing costs data...")
+
+        marketing_costs_path = config.find_marketing_costs_csv(self.account_id)
+
+        if marketing_costs_path is None:
+            logger.warning(f"No marketing costs CSV found for {self.account_name}")
+            logger.warning("CAC metrics will not be available")
+            return
 
         try:
-            if os.path.exists(marketing_costs_path):
-                self.marketing_costs_df = load_marketing_costs(marketing_costs_path)
-                logger.info(f"✓ Successfully loaded marketing costs for {len(self.marketing_costs_df):,} cohorts")
-            else:
-                logger.warning(f"⚠ Marketing costs file not found at {marketing_costs_path}")
-                logger.warning("⚠ CAC metrics will not be calculated")
-                self.marketing_costs_df = None
+            self.marketing_costs_df = load_marketing_costs(marketing_costs_path)
+            logger.info(f"Marketing costs loaded: {len(self.marketing_costs_df)} records")
         except Exception as e:
-            logger.error(f"✗ Error loading marketing costs: {e}")
-            self.marketing_costs_df = None
+            logger.error(f"Error loading marketing costs: {e}")
 
     def load_sessions(self):
-        """Load Live Shopping sessions data."""
-        if not config.ENABLE_LIVE_ANALYSIS:
-            logger.info("Live Shopping analysis is disabled in config")
+        """Load live shopping sessions data (optional)."""
+        logger.info("\nLoading live shopping sessions data...")
+
+        sessions_path = config.find_live_sessions_csv(self.account_id)
+
+        if sessions_path is None:
+            logger.warning(f"No live sessions CSV found for {self.account_name}")
+            logger.warning("Live shopping analysis will not be available")
             return False
 
-        sessions_path = os.path.join(config.DATA_DIR, config.LIVE_SESSIONS_FILENAME)
-
         try:
-            if os.path.exists(sessions_path):
-                self.sessions_df = load_live_sessions(sessions_path)
-                logger.info(f"✓ Successfully loaded {len(self.sessions_df):,} live shopping sessions")
-                return True
-            else:
-                logger.warning(f"⚠ Live shopping sessions file not found at {sessions_path}")
-                logger.warning("⚠ Live shopping analysis will be skipped")
-                self.sessions_df = None
-                return False
+            self.sessions_df = load_live_sessions(sessions_path)
+            logger.info(f"Live sessions loaded: {len(self.sessions_df)} sessions")
+            return True
         except Exception as e:
-            logger.error(f"✗ Error loading live shopping sessions: {e}")
-            self.sessions_df = None
+            logger.error(f"Error loading sessions: {e}")
             return False
 
     def analyze_live_sessions(self):
@@ -141,12 +152,25 @@ class CohortAnalysisTool:
                 buffer_minutes=config.LIVE_SESSION_BUFFER_MINUTES
             )
 
+            # Determine comparison date range (auto-detect from sessions or use config)
+            if config.LIVE_COMPARISON_DATE_RANGE:
+                comparison_range = config.LIVE_COMPARISON_DATE_RANGE
+                logger.info(f"Using configured comparison period: {comparison_range[0]} to {comparison_range[1]}")
+            else:
+                # Auto-detect from session data
+                comparison_range = (
+                    self.sessions_df['Start Time'].min().strftime('%Y-%m-%d'),
+                    self.sessions_df['End Time'].max().strftime('%Y-%m-%d')
+                )
+                logger.info(f"Auto-detected live comparison period: {comparison_range[0]} to {comparison_range[1]}")
+
             # Calculate live vs regular comparison
             logger.info("Comparing live vs regular performance...")
             self.live_comparison = compare_live_vs_regular(
                 self.df,
                 config.CUSTOMER_ID_FIELD,
-                config.LTV_WINDOWS
+                config.LTV_WINDOWS,
+                comparison_date_range=comparison_range
             )
 
             # Calculate session-level metrics
@@ -250,24 +274,24 @@ class CohortAnalysisTool:
             return False
 
         logger.info("="*80)
-        logger.info("EXPORTING CSV REPORTS")
+        logger.info(f"EXPORTING CSV REPORTS - Account: {self.account_name}")
         logger.info("="*80)
 
         try:
-            os.makedirs(config.CSV_OUTPUT_DIR, exist_ok=True)
+            os.makedirs(self.csv_output_dir, exist_ok=True)
 
             # Export retention rates
-            retention_file = os.path.join(config.CSV_OUTPUT_DIR, 'cohort_retention.csv')
+            retention_file = os.path.join(self.csv_output_dir, 'cohort_retention.csv')
             self.retention_rates.to_csv(retention_file, encoding=config.CSV_ENCODING)
             logger.info(f"✓ Exported retention rates to {retention_file}")
 
             # Export customer metrics
-            customer_file = os.path.join(config.CSV_OUTPUT_DIR, 'customer_metrics.csv')
+            customer_file = os.path.join(self.csv_output_dir, 'customer_metrics.csv')
             self.customer_ltv.to_csv(customer_file, index=False, encoding=config.CSV_ENCODING)
             logger.info(f"✓ Exported customer metrics to {customer_file}")
 
             # Export cohort summary
-            summary_file = os.path.join(config.CSV_OUTPUT_DIR, 'cohort_summary.csv')
+            summary_file = os.path.join(self.csv_output_dir, 'cohort_summary.csv')
             self.cohort_summary.to_csv(summary_file, index=False, encoding=config.CSV_ENCODING)
             logger.info(f"✓ Exported cohort summary to {summary_file}")
 
@@ -276,7 +300,7 @@ class CohortAnalysisTool:
                 logger.info("Exporting live shopping analysis reports...")
 
                 # Export comparison summary
-                comparison_file = os.path.join(config.CSV_OUTPUT_DIR, 'live_vs_regular_comparison.csv')
+                comparison_file = os.path.join(self.csv_output_dir, 'live_vs_regular_comparison.csv')
                 comparison_data = []
                 for source, metrics in self.live_comparison.items():
                     if source != 'Difference':
@@ -288,19 +312,19 @@ class CohortAnalysisTool:
 
                 # Export session performance
                 if self.session_summary is not None and len(self.session_summary) > 0:
-                    session_file = os.path.join(config.CSV_OUTPUT_DIR, 'session_performance.csv')
+                    session_file = os.path.join(self.csv_output_dir, 'session_performance.csv')
                     self.session_summary.to_csv(session_file, index=False, encoding=config.CSV_ENCODING)
                     logger.info(f"✓ Exported session performance to {session_file}")
 
                 # Export host performance
                 if self.host_performance is not None and len(self.host_performance) > 0:
-                    host_file = os.path.join(config.CSV_OUTPUT_DIR, 'host_performance.csv')
+                    host_file = os.path.join(self.csv_output_dir, 'host_performance.csv')
                     self.host_performance.to_csv(host_file, index=False, encoding=config.CSV_ENCODING)
                     logger.info(f"✓ Exported host performance to {host_file}")
 
                 # Export live cohort retention
                 if self.live_retention is not None and len(self.live_retention) > 0:
-                    live_retention_file = os.path.join(config.CSV_OUTPUT_DIR, 'live_cohort_retention.csv')
+                    live_retention_file = os.path.join(self.csv_output_dir, 'live_cohort_retention.csv')
                     self.live_retention.to_csv(live_retention_file, encoding=config.CSV_ENCODING)
                     logger.info(f"✓ Exported live cohort retention to {live_retention_file}")
 
@@ -317,8 +341,11 @@ class CohortAnalysisTool:
             return False
 
         logger.info("="*80)
-        logger.info("GENERATING VISUALIZATIONS")
+        logger.info(f"GENERATING VISUALIZATIONS - Account: {self.account_name}")
         logger.info("="*80)
+
+        # Ensure output directory exists
+        os.makedirs(self.viz_output_dir, exist_ok=True)
 
         try:
             generate_all_visualizations(
@@ -326,10 +353,11 @@ class CohortAnalysisTool:
                 self.retention_rates,
                 self.cohort_ltv,
                 self.cohort_summary,
-                config.VIZ_OUTPUT_DIR,
+                self.viz_output_dir,
                 dpi=config.DPI
             )
-            logger.info("✓ All visualizations generated successfully")
+
+            logger.info(f"\n✓ Visualizations saved to: {self.viz_output_dir}")
             return True
         except Exception as e:
             logger.error(f"✗ Error generating visualizations: {e}")
@@ -374,12 +402,14 @@ class CohortAnalysisTool:
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
 
-        logger.info("="*80)
-        logger.info("ANALYSIS COMPLETE")
+        # Final summary
+        logger.info("\n" + "="*80)
+        logger.info(f"ANALYSIS COMPLETE - {self.account_name}")
         logger.info("="*80)
         logger.info(f"Total processing time: {duration:.2f} seconds")
-        logger.info(f"CSV reports saved to: {config.CSV_OUTPUT_DIR}")
-        logger.info(f"Visualizations saved to: {config.VIZ_OUTPUT_DIR}")
+        logger.info(f"CSV Reports: {self.csv_output_dir}")
+        logger.info(f"Visualizations: {self.viz_output_dir}")
+        logger.info("="*80)
 
         return True
 
@@ -453,10 +483,60 @@ class CohortAnalysisTool:
         return True
 
 
-def display_menu():
-    """Display main menu."""
+def select_account() -> str:
+    """Prompt user to select a TikTok Shop account.
+
+    Returns:
+        Account ID ('MX' or 'US')
+    """
     print("\n" + "="*80)
     print("TikTok Shop Cohort Analysis Tool")
+    print("="*80)
+    print("\nSelect Account:")
+    print()
+
+    for account_id, account_info in config.ACCOUNTS.items():
+        print(f"  {account_id} - {account_info['name']}")
+
+    print("="*80)
+
+    while True:
+        choice = input("\nEnter account ID (MX/US): ").strip().upper()
+        if choice in config.ACCOUNTS:
+            return choice
+        print(f"✗ Invalid account ID. Please enter one of: {', '.join(config.ACCOUNTS.keys())}")
+
+
+def setup_logging(account_id: str):
+    """Configure logging with account-specific log file.
+
+    Args:
+        account_id: Account identifier for log file naming
+    """
+    log_file = config.ACCOUNTS[account_id]['log_file']
+
+    # Clear any existing handlers
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+
+def display_menu(account_name: str):
+    """Display the main menu with account context.
+
+    Args:
+        account_name: Human-readable account name to display
+    """
+    print("\n" + "="*80)
+    print(f"TikTok Shop Cohort Analysis Tool - {account_name}")
     print("="*80)
     print("1. Run Full Analysis (recommended)")
     print("2. Load & Clean Data Only")
@@ -470,11 +550,22 @@ def display_menu():
 
 
 def main():
-    """Main execution function."""
-    tool = CohortAnalysisTool()
+    """Main entry point for the cohort analysis tool."""
+
+    # Account selection
+    account_id = select_account()
+    account_name = config.ACCOUNTS[account_id]['name']
+
+    # Set up account-specific logging
+    setup_logging(account_id)
+
+    logger.info(f"Starting TikTok Shop Cohort Analysis Tool - {account_name}")
+
+    # Initialize tool with selected account
+    tool = CohortAnalysisTool(account_id)
 
     while True:
-        display_menu()
+        display_menu(account_name)
 
         try:
             choice = input("\nSelect an option (1-8): ").strip()

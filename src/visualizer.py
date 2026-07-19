@@ -47,6 +47,12 @@ def plot_retention_heatmap(retention_rates: pd.DataFrame, save_path: str, dpi: i
             elif not mask.iloc[i, j]:
                 annot_array[i, j] = f'{annot_data.iloc[i, j]:.1f}'
 
+    # Calculate color scale based on Month 1+ data only
+    month1_onwards =retention_rates.iloc[:,1:]
+    actual_max = month1_onwards.max().max()
+    actual_min = month1_onwards[month1_onwards >0].min().min() if (month1_onwards >0).any().any() else 0
+    color_center = (actual_max + actual_min) / 2
+
     # Create heatmap with mask for NaN values
     # Exclude 0 from color scale by setting vmin=0.1 (so only actual retention gets colored)
     sns.heatmap(
@@ -55,9 +61,9 @@ def plot_retention_heatmap(retention_rates: pd.DataFrame, save_path: str, dpi: i
         fmt='',
         mask=mask,
         cmap='RdYlGn',
-        center=20,  # Adjusted center for better color distribution
-        vmin=0.1,   # Exclude 0 from color scale
-        vmax=100,
+        center=color_center,  # Adjusted center for better color distribution
+        vmin=0,   # Exclude 0 from color scale
+        vmax=actual_max*1.1, # Slightly above max for headroom
         cbar_kws={'label': 'Retention Rate (%)'},
         ax=ax,
         linewidths=0.5,
@@ -114,7 +120,11 @@ def plot_retention_curves(retention_rates: pd.DataFrame, save_path: str, dpi: in
     ax.set_title('Cohort Retention Curves', fontsize=16, fontweight='bold', pad=20)
     ax.set_xlabel('Months Since First Purchase', fontsize=12, fontweight='bold')
     ax.set_ylabel('Retention Rate (%)', fontsize=12, fontweight='bold')
-    ax.set_ylim(0, 100)
+    # Auto-scale y axise based on actual data ecxl. month 0)
+    max_retention = retention_rates.iloc[:,1:].max().max()
+    y_max = max(10, np.ceil(max_retention/5) *5 +5)
+    #round to nearest 5, add margin
+    ax.set_ylim(0, y_max)
     ax.grid(True, alpha=0.3)
 
     # Add legend (only for highlighted cohorts + average)

@@ -27,7 +27,9 @@ def load_tiktok_orders(csv_path: str) -> pd.DataFrame:
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
 
     # Read CSV with UTF-8 BOM encoding
-    df = pd.read_csv(csv_path, encoding='utf-8-sig')
+    # low_memory=False avoids per-chunk dtype inference, which can otherwise
+    # produce inconsistent object arrays that pyarrow fails to convert to parquet
+    df = pd.read_csv(csv_path, encoding='utf-8-sig', low_memory=False)
 
     logger.info(f"Loaded {len(df):,} orders with {len(df.columns)} columns")
 
@@ -96,10 +98,11 @@ def parse_currency_amount(series: pd.Series) -> pd.Series:
 def filter_completed_orders(df: pd.DataFrame) -> pd.DataFrame:
     """
     Filter to only completed/delivered orders.
+    Supports both English and Spanish status names.
 
     Includes:
-    - Order Status = "Completado"
-    - Order Status = "Enviado" AND Order Substatus = "Entregado"
+    - Spanish: "Completado" or ("Enviado" + "Entregado")
+    - English: "Completed" or ("Shipped" + "Delivered")
 
     Args:
         df: DataFrame with all orders
@@ -111,12 +114,19 @@ def filter_completed_orders(df: pd.DataFrame) -> pd.DataFrame:
 
     initial_count = len(df)
 
-    # Create filter conditions
-    is_completado = df['Order Status'] == 'Completado'
-    is_enviado_entregado = (df['Order Status'] == 'Enviado') & (df['Order Substatus'] == 'Entregado')
+    # Create filter conditions for both English and Spanish
+    is_completed = (
+        (df['Order Status'] == 'Completado') |  # Spanish
+        (df['Order Status'] == 'Completed')     # English
+    )
+
+    is_shipped_delivered = (
+        ((df['Order Status'] == 'Enviado') & (df['Order Substatus'] == 'Entregado')) |  # Spanish
+        ((df['Order Status'] == 'Shipped') & (df['Order Substatus'] == 'Delivered'))    # English
+    )
 
     # Apply filter
-    df_filtered = df[is_completado | is_enviado_entregado].copy()
+    df_filtered = df[is_completed | is_shipped_delivered].copy()
 
     filtered_count = len(df_filtered)
     logger.info(f"Kept {filtered_count:,} completed orders ({filtered_count/initial_count*100:.1f}%)")
@@ -226,7 +236,7 @@ def load_live_sessions(csv_path: str) -> pd.DataFrame:
     # Parse datetime fields
     for col in ['Start Time', 'End Time']:
         df[col] = df[col].astype(str).str.strip()
-        df[col] = pd.to_datetime(df[col], format='%m/%d/%Y %I:%M:%S %p', errors='coerce')
+        df[col] = pd.to_datetime(df[col], errors='coerce')
 
         null_count = df[col].isna().sum()
         if null_count > 0:
@@ -264,23 +274,36 @@ def load_live_sessions(csv_path: str) -> pd.DataFrame:
     return df
 
 
-def load_and_clean_data(csv_path: str, force_reload: bool = False) -> pd.DataFrame:
+def load_and_clean_data(csv_path: str, account_id: str = None, force_reload: bool = False) -> pd.DataFrame:
     """
-    Load and clean TikTok Shop order data with caching.
+    Load and clean TikTok Shop order data with account-specific caching.
 
     Args:
-        csv_path: Path to CSV file
-        force_reload: If True, ignore cached parquet file
+        csv_path: Path to the CSV file to load
+        account_id: Account identifier for cache isolation ('MX', 'US', etc.)
+                   If None, uses legacy single-account cache
+        force_reload: If True, ignore cached parquet file and reload from CSV
 
     Returns:
-        Cleaned DataFrame ready for analysis
+        Cleaned DataFrame ready for cohort analysis
     """
-    from config import CLEANED_DATA_FILE, PROCESSED_DIR
+    import config
+
+    # Determine cache file path (account-specific or legacy)
+    if account_id:
+        if account_id in config.ACCOUNTS:
+            processed_dir = config.ACCOUNTS[account_id]['processed_dir']
+            cache_file = os.path.join(processed_dir, "orders_cleaned.parquet")
+        else:
+            raise ValueError(f"Unknown account_id: {account_id}")
+    else:
+        # Backwards compatibility: use legacy cache location
+        cache_file = config.CLEANED_DATA_FILE
 
     # Check if cached cleaned data exists
-    if os.path.exists(CLEANED_DATA_FILE) and not force_reload:
-        logger.info(f"Loading cached cleaned data from {CLEANED_DATA_FILE}")
-        return pd.read_parquet(CLEANED_DATA_FILE)
+    if os.path.exists(cache_file) and not force_reload:
+        logger.info(f"Loading cached cleaned data from {cache_file}")
+        return pd.read_parquet(cache_file)
 
     # Load raw data
     df = load_tiktok_orders(csv_path)
@@ -294,8 +317,9 @@ def load_and_clean_data(csv_path: str, force_reload: bool = False) -> pd.DataFra
         'SKU Platform Discount', 'SKU Seller Discount',
         'SKU Subtotal After Discount', 'Shipping Fee After Discount',
         'Original Shipping Fee', 'Shipping Fee Seller Discount',
-        'Shipping Fee Platform Discount', 'Payment platform discount',
-        'Retail Delivery Fee', 'Order Amount', 'Order Refund Amount'
+        'Shipping Fee Platform Discount', 'Co-Funded Shipping Fee Discount',
+        'Payment platform discount', 'Retail Delivery Fee',
+        'Taxes', 'Order Amount', 'Order Refund Amount'
     ]
 
     for col in currency_columns:
@@ -304,6 +328,13 @@ def load_and_clean_data(csv_path: str, force_reload: bool = False) -> pd.DataFra
 
     # Filter to completed orders
     df = filter_completed_orders(df)
+
+    # Apply analysis end date cutoff if configured
+    if hasattr(config, 'ANALYSIS_END_DATE') and config.ANALYSIS_END_DATE:
+        end_date = pd.Timestamp(config.ANALYSIS_END_DATE) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        before_cutoff = len(df)
+        df = df[df['Created Time'] <= end_date].copy()
+        logger.info(f"Applied end date cutoff {config.ANALYSIS_END_DATE}: kept {len(df):,} orders (excluded {before_cutoff - len(df):,})")
 
     # Drop duplicates (keep first occurrence)
     initial_count = len(df)
@@ -318,9 +349,9 @@ def load_and_clean_data(csv_path: str, force_reload: bool = False) -> pd.DataFra
     # Validate data quality
     validation = validate_data_quality(df)
 
-    # Save cleaned data to parquet for faster loading
-    os.makedirs(PROCESSED_DIR, exist_ok=True)
-    df.to_parquet(CLEANED_DATA_FILE, index=False)
-    logger.info(f"Saved cleaned data to {CLEANED_DATA_FILE}")
+    # Save cleaned data to account-specific cache
+    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+    df.to_parquet(cache_file, index=False)
+    logger.info(f"Saved cleaned data to {cache_file}")
 
     return df
