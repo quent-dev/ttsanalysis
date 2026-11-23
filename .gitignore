@@ -45,3 +45,6 @@ Thumbs.db
 
 # Claude Code
 .claude/settings.local.json
+data/*/raw/
+data/*/processed/
+output/
